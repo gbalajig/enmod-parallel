@@ -7,11 +7,17 @@
 #include "enmod/BIDP.h"
 #include "enmod/FIDP.h"
 #include "enmod/API.h"
+#include "enmod/AStarSolver.h"
 // Dynamic DP Solvers
 #include "enmod/DynamicBIDPSolver.h"
 #include "enmod/DynamicAPISolver.h"
 #include "enmod/DynamicFIDPSolver.h"
 #include "enmod/DynamicAVISolver.h"
+// Dynamic Heuristic / Advanced
+#include "enmod/DynamicAStarSolver.h"
+#include "enmod/DynamicHPASolver.h"
+#include "enmod/ADASolver.h"
+#include "enmod/DStarLiteSolver.h"
 // RL Solvers
 #include "enmod/QLearningSolver.h"
 #include "enmod/SARSASolver.h"
@@ -19,20 +25,22 @@
 #include "enmod/DynamicQLearningSolver.h"
 #include "enmod/DynamicSARSASolver.h"
 #include "enmod/DynamicActorCriticSolver.h"
+#include "enmod/DQNSolver.h"
 // EnMod-DP Solvers
 #include "enmod/HybridDPRLSolver.h"
 #include "enmod/AdaptiveCostSolver.h"
 #include "enmod/InterlacedSolver.h"
 #include "enmod/HierarchicalSolver.h"
 #include "enmod/PolicyBlendingSolver.h"
+#include "enmod/RLEnhancedAStarSolver.h"
 // Multi-Agent CPS
 #include "enmod/MultiAgentCPSController.h"
 // Parallel Solvers
 #include "enmod/ParallelBIDP.h"
-#include "enmod/ParallelStaticSolvers.h" // FIDP, AVI
+#include "enmod/ParallelStaticSolvers.h" 
 #include "enmod/ParallelDynamicBIDPSolver.h"
-#include "enmod/ParallelDynamicSolvers.h" // Dynamic FIDP, AVI
-#include "enmod/ParallelHybridSolvers.h" // Hybrid, Interlaced, Hierarchical, PolicyBlending, Adaptive
+#include "enmod/ParallelDynamicSolvers.h" 
+#include "enmod/ParallelHybridSolvers.h" 
 #include <cuda_runtime.h>
 
 #include <iostream>
@@ -68,20 +76,36 @@ void runComparisonScenario(const json& config, const std::string& report_path, s
     // --- Standard Solvers ---
     solvers.push_back(std::make_unique<BIDP>(grid));
     solvers.push_back(std::make_unique<FIDP>(grid));
-    solvers.push_back(std::make_unique<API>(grid));
-    solvers.push_back(std::make_unique<QLearningSolver>(grid));
-    solvers.push_back(std::make_unique<SARSASolver>(grid));
-    solvers.push_back(std::make_unique<ActorCriticSolver>(grid));
+    
+    // [ENABLED] Static A* (Very Fast)
+    solvers.push_back(std::make_unique<AStarSolver>(grid)); 
+
+    // --- Dynamic DP Solvers ---
     solvers.push_back(std::make_unique<DynamicBIDPSolver>(grid));
     solvers.push_back(std::make_unique<DynamicFIDPSolver>(grid));
-    solvers.push_back(std::make_unique<DynamicAVISolver>(grid));
-    solvers.push_back(std::make_unique<DynamicAPISolver>(grid));
-    solvers.push_back(std::make_unique<DynamicQLearningSolver>(grid));
-    solvers.push_back(std::make_unique<DynamicSARSASolver>(grid));
-    solvers.push_back(std::make_unique<DynamicActorCriticSolver>(grid));
+    
+    // [REMAIN DISABLED] These are too slow for 100x100 on CPU
+    // solvers.push_back(std::make_unique<DynamicAVISolver>(grid)); 
+    // solvers.push_back(std::make_unique<DynamicAPISolver>(grid)); 
+
+    // --- Dynamic Heuristic / Advanced Solvers ---
+    // [ENABLED] These are efficient and safe to run
+    solvers.push_back(std::make_unique<DynamicAStarSolver>(grid));
+    solvers.push_back(std::make_unique<DynamicHPASolver>(grid));
+    solvers.push_back(std::make_unique<ADASolver>(grid));
+    solvers.push_back(std::make_unique<DStarLiteSolver>(grid));
+
+    // --- RL Solvers (Enable if willing to wait for training) ---
+    // These will add significant startup time (minutes) for training
+    solvers.push_back(std::make_unique<QLearningSolver>(grid));
+    solvers.push_back(std::make_unique<DQNSolver>(grid));
+    solvers.push_back(std::make_unique<RLEnhancedAStarSolver>(grid));
+
+    // --- EnMod-DP Hybrid Solvers (CPU Versions) ---
+    // Keeping these enabled to compare against GPU
     solvers.push_back(std::make_unique<HybridDPRLSolver>(grid));
     solvers.push_back(std::make_unique<AdaptiveCostSolver>(grid));
-    solvers.push_back(std::make_unique<InterlacedSolver>(grid));
+    solvers.push_back(std::make_unique<InterlacedSolver>(grid)); 
     solvers.push_back(std::make_unique<HierarchicalSolver>(grid));
     solvers.push_back(std::make_unique<PolicyBlendingSolver>(grid));
     
@@ -95,10 +119,9 @@ void runComparisonScenario(const json& config, const std::string& report_path, s
         
         // Dynamic
         solvers.push_back(std::make_unique<ParallelDynamicBIDPSolver>(grid));
-        solvers.push_back(std::make_unique<ParallelDynamicFIDPSolver>(grid));
         solvers.push_back(std::make_unique<ParallelDynamicAVISolver>(grid));
 
-        // Hybrid
+        // EnMod-DP Hybrid Solvers (GPU Versions)
         solvers.push_back(std::make_unique<ParallelHybridDPRLSolver>(grid));
         solvers.push_back(std::make_unique<ParallelAdaptiveCostSolver>(grid));
         solvers.push_back(std::make_unique<ParallelInterlacedSolver>(grid));
@@ -110,9 +133,13 @@ void runComparisonScenario(const json& config, const std::string& report_path, s
     }
 
     for (const auto& solver : solvers) {
-        std::cout << "  - Running " << solver->getName() << "... ";
+        std::cout << "  - Running " << solver->getName() << "... " << std::flush;
+        if (isGpuAvailable()) cudaDeviceSynchronize();
+        
         auto start_time = std::chrono::high_resolution_clock::now();
         solver->run();
+        if (isGpuAvailable()) cudaDeviceSynchronize();
+        
         auto end_time = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double, std::milli> execution_time = end_time - start_time;
         std::cout << "Done (" << std::fixed << std::setprecision(2) << execution_time.count() << " ms).\n";
@@ -140,8 +167,10 @@ int main() {
 
         std::vector<json> scenarios;
         scenarios.push_back(ScenarioGenerator::generate(5, "5x5"));
-        scenarios.push_back(ScenarioGenerator::generate(10, "10x10"));
         scenarios.push_back(ScenarioGenerator::generate(15, "15x15"));
+        scenarios.push_back(ScenarioGenerator::generate(50, "50x50"));
+        scenarios.push_back(ScenarioGenerator::generate(100, "100x100"));
+        // scenarios.push_back(ScenarioGenerator::generate(200, "200x200")); // Commented for faster debugging iteration
 
         std::vector<Result> all_results;
         for (const auto& config : scenarios) {

@@ -112,7 +112,9 @@ void ParallelDynamicSolverHelper::generateReport(std::ofstream& report_file) con
 namespace { std::vector<std::vector<Cost>> temp_fidp_map; }
 ParallelDynamicFIDPSolver::ParallelDynamicFIDPSolver(const Grid& grid) : ParallelDynamicSolverHelper(grid, "ParallelDynamicFIDPSim") {}
 const std::vector<std::vector<Cost>>& ParallelDynamicFIDPSolver::run_gpu_step(const Grid& step_grid) {
-    ParallelFIDP solver(step_grid);
+    // FIX: ParallelFIDP (Forward) produces Cost-From-Start, which breaks gradient descent.
+    // We use ParallelBIDP (Backward) to generate Cost-To-Goal, enabling the agent to navigate.
+    ParallelBIDP solver(step_grid);
     solver.run();
     temp_fidp_map = solver.getCostMap();
     return temp_fidp_map;

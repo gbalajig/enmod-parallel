@@ -11,8 +11,8 @@
 using json = nlohmann::json;
 
 // --- Helper function Definitions ---
-// (createSpreadingFire, createDynamicSmoke, createBlockedPathEvent helpers remain the same)
 auto createSpreadingFire = [](json& config, Position origin, int start_time, const std::string& size_str, int grid_size) -> bool {
+    // ... (boundary/wall checks same as before) ...
     if (!(origin.row >= 0 && origin.row < grid_size && origin.col >= 0 && origin.col < grid_size)) return false;
     bool is_wall = false;
     if (config.contains("walls")) {
@@ -34,7 +34,9 @@ auto createSpreadingFire = [](json& config, Position origin, int start_time, con
     });
 
     int base_spread_rate = 4;
-    int max_spread = std::max(1, grid_size / 10);
+    // UPDATED: Allow fire to spread across half the map size to keep it active during long traversals
+    int max_spread = std::max(1, grid_size / 2); 
+    
     std::set<Position> fire_locations;
     fire_locations.insert(origin);
     std::vector<Position> current_front = {origin};
@@ -47,6 +49,7 @@ auto createSpreadingFire = [](json& config, Position origin, int start_time, con
             int dc[] = {-1,  0,  1, -1,  1, -1,  0,  1};
             for(int i = 0; i < 8; ++i) {
                 Position p = {current_fire_pos.row + dr[i], current_fire_pos.col + dc[i]};
+                // ... (rest of the loop logic remains the same) ...
                 if (p.row >= 0 && p.row < grid_size && p.col >= 0 && p.col < grid_size &&
                     fire_locations.find(p) == fire_locations.end()) {
                     bool p_is_wall = false;
@@ -74,10 +77,11 @@ auto createSpreadingFire = [](json& config, Position origin, int start_time, con
         current_front = std::move(next_front);
         if (current_front.empty()) break;
     }
-    return true; // Indicate success
+    return true; 
 };
 
-auto createDynamicSmoke = [](json& config, Position origin, int start_time, const std::string& intensity = "light", int grid_size = 0) -> bool { // Return bool
+// ... (createDynamicSmoke and createBlockedPathEvent remain the same) ...
+auto createDynamicSmoke = [](json& config, Position origin, int start_time, const std::string& intensity = "light", int grid_size = 0) -> bool { 
      if (!(origin.row >= 0 && origin.row < grid_size && origin.col >= 0 && origin.col < grid_size)) return false;
     bool is_wall = false;
     if (config.contains("walls")) {
@@ -99,7 +103,8 @@ auto createDynamicSmoke = [](json& config, Position origin, int start_time, cons
     });
 
     int spread_rate = 5;
-    int max_spread = std::max(2, grid_size / 8); // Make smoke spread further
+    // UPDATED: Smoke spreads further relative to grid size
+    int max_spread = std::max(2, grid_size / 3); 
     std::set<Position> smoke_locations;
     smoke_locations.insert(origin);
     std::vector<Position> current_front = {origin};
@@ -109,7 +114,7 @@ auto createDynamicSmoke = [](json& config, Position origin, int start_time, cons
         std::vector<Position> next_front;
         std::string current_intensity = (spread_step <= max_spread * 0.75 && intensity == "heavy") ? "heavy" : "light";
         for (const auto& current_smoke_pos : current_front) {
-            int dr[] = {-1, 1, 0, 0}; // Orthogonal spread
+            int dr[] = {-1, 1, 0, 0}; 
             int dc[] = {0, 0, -1, 1};
             for(int i = 0; i < 4; ++i) {
                  Position p = {current_smoke_pos.row + dr[i], current_smoke_pos.col + dc[i]};
@@ -140,10 +145,11 @@ auto createDynamicSmoke = [](json& config, Position origin, int start_time, cons
          current_front = std::move(next_front);
          if (current_front.empty()) break;
     }
-     return true; // Indicate success
+     return true; 
 };
 
 auto createBlockedPathEvent = [](json& config, Position pos, int time_step) -> bool {
+    // ... (logic remains the same) ...
      bool is_wall = false;
      if (config.contains("walls")) {
         is_wall = std::any_of(config["walls"].begin(), config["walls"].end(),
@@ -160,12 +166,10 @@ auto createBlockedPathEvent = [](json& config, Position pos, int time_step) -> b
             {"type", "path_block"}, {"time_step", time_step},
             {"position", {{"row", pos.row}, {"col", pos.col}}}
         });
-        return true; // Indicate success
+        return true; 
      }
-     return false; // Indicate failure
+     return false; 
 };
-// --- End Helper Functions ---
-
 
 json ScenarioGenerator::generate(int size, const std::string& name) {
     json config;
@@ -201,52 +205,45 @@ json ScenarioGenerator::generate(int size, const std::string& name) {
     primary_exit = {config["exits"][0]["row"], config["exits"][0]["col"]};
 
 
-    // --- REVERTED TO SIMPLE WALL PLACEMENT ---
     config["walls"] = json::array();
-    int num_walls = (size * size) / 20; // Original low wall density
+    // UPDATED: Increase wall density slightly for larger maps to ensure maze-like complexity
+    int num_walls = (size * size) / 15; 
     std::set<Position> placed_locations; 
     placed_locations.insert(start_pos);
     placed_locations.insert(primary_exit);
 
     // --- Define key points for hazards ---
-    // Hazard 1 (PANIC): Adjacent to start
-    Position panic_fire_pos_1 = {std::max(1, size / 10), std::max(1, size / 10)}; // Relative to size
+    Position panic_fire_pos_1 = {std::max(1, size / 10), std::max(1, size / 10)}; 
     if (panic_fire_pos_1 == start_pos) panic_fire_pos_1.row++;
     placed_locations.insert(panic_fire_pos_1); 
 
-    // Hazard 2 (PANIC): Near Exit
-    Position exit_trap_fire_pos = {primary_exit.row - (size / 10), primary_exit.col - (size / 10)}; // Relative to size
-    if(exit_trap_fire_pos.row < 0) exit_trap_fire_pos.row = size / 2 + 2; // boundary check
-    if (exit_trap_fire_pos == panic_fire_pos_1) exit_trap_fire_pos.row--; // offset
+    Position exit_trap_fire_pos = {primary_exit.row - (size / 10), primary_exit.col - (size / 10)}; 
+    if(exit_trap_fire_pos.row < 0) exit_trap_fire_pos.row = size / 2 + 2; 
+    if (exit_trap_fire_pos == panic_fire_pos_1) exit_trap_fire_pos.row--; 
     placed_locations.insert(exit_trap_fire_pos);
 
 
-    // --- *** NEW: VARIABLE MID-PATH HAZARDS *** ---
-    int num_mid_hazards = size / 10; // Scale number of hazards with grid size
-    // Place hazards in the "middle" 60% of the grid
+    // --- *** VARIABLE HAZARDS *** ---
+    // UPDATED: Increase hazard count divisor to ensure density on large maps
+    int num_mid_hazards = size / 5; 
     std::uniform_int_distribution<int> dist_pos_mid(size / 5, size - (size / 5)); 
-    // Time hazards to appear throughout the journey
-    int max_time = static_cast<int>(size * 1.5); // Estimated travel time
+    int max_time = static_cast<int>(size * 1.5); 
     std::uniform_int_distribution<int> dist_time(5, std::max(10, max_time)); 
 
     for (int i = 0; i < num_mid_hazards; ++i) {
         Position p;
         int placement_tries = 0;
-        // Try to find an empty spot 50 times
         do {
             p = {dist_pos_mid(rng), dist_pos_mid(rng)};
             placement_tries++;
         } while (placed_locations.count(p) && placement_tries < 50);
 
-        // If we found a free spot, reserve it
         if (!placed_locations.count(p)) {
             placed_locations.insert(p);
         }
     }
-    // --- *** END VARIABLE HAZARDS *** ---
 
-
-    // --- Place random walls, avoiding start, exit, and ALL hazard zones ---
+    // --- Place random walls ---
     int placed_count = 0;
     int max_tries = (num_walls + size) * 5;
     int tries = 0;
@@ -263,32 +260,24 @@ json ScenarioGenerator::generate(int size, const std::string& name) {
         }
     }
 
-
-    // --- No Initial Smoke ---
     config["smoke"] = json::array();
-
-    // --- Dynamic Events ---
     config["dynamic_events"] = json::array();
 
     // --- ADD GUARANTEED TRAPS ---
-    // 1. PANIC Test 1: Fire adjacent to start
     int fire_trigger_time_1 = 3; 
     createSpreadingFire(config, panic_fire_pos_1, fire_trigger_time_1, "large", size);
 
-    // 2. PANIC Test 2 (Exit Trap)
-    int fire_trigger_time_exit = std::max(15, max_time - (size / 10)); // Timed to catch the agent near the end
+    int fire_trigger_time_exit = std::max(15, max_time - (size / 10)); 
     createSpreadingFire(config, exit_trap_fire_pos, fire_trigger_time_exit, "large", size);
     
     // --- ADD VARIABLE HAZARDS ---
-    // We re-iterate over the locations we reserved, skipping the ones we just used
-    // (This is a bit redundant but ensures helpers are called correctly)
     std::set<Position> guaranteed_hazards = {panic_fire_pos_1, exit_trap_fire_pos};
     for (const auto& p : placed_locations) {
         if (p == start_pos || p == primary_exit || guaranteed_hazards.count(p)) {
-            continue; // Skip start, exit, and guaranteed traps
+            continue; 
         }
         if (config["walls"].dump().find("{\"col\":" + std::to_string(p.col) + ",\"row\":" + std::to_string(p.row) + "}") != std::string::npos) {
-            continue; // Skip if it's a wall (shouldn't happen, but good check)
+            continue; 
         }
 
         int time = dist_time(rng);

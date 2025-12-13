@@ -22,12 +22,17 @@ set(SOURCES
     src/FIDP.cpp
     src/AVI.cpp
     src/API.cpp
+    src/AStarSolver.cpp             # Added
     src/PolicyGenerator.cpp
     src/PolicyVerifier.cpp
     src/DynamicBIDPSolver.cpp
     src/DynamicAPISolver.cpp
     src/DynamicFIDPSolver.cpp
     src/DynamicAVISolver.cpp
+    src/DynamicAStarSolver.cpp      # Added
+    src/DynamicHPASolver.cpp        # Added
+    src/ADASolver.cpp               # Added
+    src/DStarLiteSolver.cpp         # Added
     src/RLSolver.cpp
     src/QLearningSolver.cpp
     src/DynamicQLearningSolver.cpp
@@ -35,6 +40,8 @@ set(SOURCES
     src/DynamicSARSASolver.cpp
     src/ActorCriticSolver.cpp
     src/DynamicActorCriticSolver.cpp
+    src/DQNSolver.cpp               # Added
+    src/RLEnhancedAStarSolver.cpp   # Added
     src/HybridDPRLSolver.cpp
     src/AdaptiveCostSolver.cpp
     src/InterlacedSolver.cpp
