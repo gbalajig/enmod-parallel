@@ -1,0 +1,31 @@
+{
+    "grid_size": {
+        "rows": 20,
+        "cols": 20
+    },
+    "costs": {
+        "smoke": 5,
+        "fire": 1000
+    },
+    "start": { "row": 1, "col": 1 },
+    "exits": [
+        { "row": 4, "col": 4, "id": "A" },
+        { "row": 0, "col": 2, "id": "B" }
+    ],
+    "walls": [
+        { "row": 2, "col": 2 },
+        { "row": 2, "col": 3 }
+    ],
+    "smoke": [
+        { "row": 0, "col": 1 },
+        { "row": 1, "col": 2 },
+        { "row": 1, "col": 3 }
+    ],
+    "fire": [],
+    "dynamic_event": {
+        "time_step": 2,
+        "type": "FIRE",
+        "position": { "row": 4, "col": 1 }
+    }
+}
+
