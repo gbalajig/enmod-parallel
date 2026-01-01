@@ -3,46 +3,33 @@
 #include "enmod/Grid.h"
 #include "enmod/Solver.h"
 #include "enmod/HtmlReportGenerator.h"
-// Static DP Solvers
+
+// --- 1. Static Solvers ---
 #include "enmod/BIDP.h"
 #include "enmod/FIDP.h"
-#include "enmod/API.h"
-#include "enmod/AStarSolver.h"
-// Dynamic DP Solvers
+#include "enmod/AStarSolver.h" 
+
+// --- 2. Dynamic Solvers ---
 #include "enmod/DynamicBIDPSolver.h"
-#include "enmod/DynamicAPISolver.h"
 #include "enmod/DynamicFIDPSolver.h"
-#include "enmod/DynamicAVISolver.h"
-// Dynamic Heuristic / Advanced
-#include "enmod/DynamicAStarSolver.h"
-#include "enmod/DynamicHPASolver.h"
-#include "enmod/ADASolver.h"
+#include "enmod/DynamicAVISolver.h" 
 #include "enmod/DStarLiteSolver.h"
-// RL Solvers
-#include "enmod/QLearningSolver.h"
-#include "enmod/SARSASolver.h"
-#include "enmod/ActorCriticSolver.h"
-#include "enmod/DynamicQLearningSolver.h"
-#include "enmod/DynamicSARSASolver.h"
-#include "enmod/DynamicActorCriticSolver.h"
-#include "enmod/DQNSolver.h"
-// EnMod-DP Solvers
+
+// --- 3. EnMod-DP Hybrid Solvers (Serial CPU) ---
+#include "enmod/InterlacedSolver.h"
 #include "enmod/HybridDPRLSolver.h"
 #include "enmod/AdaptiveCostSolver.h"
-#include "enmod/InterlacedSolver.h"
 #include "enmod/HierarchicalSolver.h"
 #include "enmod/PolicyBlendingSolver.h"
-#include "enmod/RLEnhancedAStarSolver.h"
-// Multi-Agent CPS
-#include "enmod/MultiAgentCPSController.h"
-// Parallel Solvers
+
+// --- 4. Parallel Solvers (CUDA GPU) ---
 #include "enmod/ParallelBIDP.h"
 #include "enmod/ParallelStaticSolvers.h" 
 #include "enmod/ParallelDynamicBIDPSolver.h"
-#include "enmod/ParallelDynamicSolvers.h" 
+#include "enmod/ParallelDynamicAVISolver.h"
 #include "enmod/ParallelHybridSolvers.h" 
-#include <cuda_runtime.h>
 
+#include <cuda_runtime.h>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -52,145 +39,164 @@
 #include <map>
 #include <chrono>
 #include <sstream>
-
-#ifdef _MSC_VER
-#pragma warning(disable : 4996)
-#endif
+#include <thread>
 
 bool isGpuAvailable() {
     int deviceCount = 0;
     cudaError_t error = cudaGetDeviceCount(&deviceCount);
-    if (error != cudaSuccess) return false;
-    return deviceCount > 0;
+    return (error == cudaSuccess && deviceCount > 0);
 }
 
-void runComparisonScenario(const json& config, const std::string& report_path, std::vector<Result>& results) {
+// Updated Parameter: 'generate_detailed_html' controls the massive per-solver files
+void runComparisonScenario(const json& config, const std::string& report_path, std::vector<Result>& results, bool generate_detailed_html) {
     Grid grid(config);
-    std::cout << "\n===== Running Comparison Scenario: " << grid.getName() << " (" << grid.getRows() << "x" << grid.getCols() << ") =====\n";
-    std::string scenario_report_path = report_path + "/" + grid.getName();
-    std::filesystem::create_directory(scenario_report_path);
-    HtmlReportGenerator::generateInitialGridReport(grid, scenario_report_path);
+    
+    // Only generate the initial map visual if detailed reports are ON
+    if (generate_detailed_html) {
+        HtmlReportGenerator::generateInitialGridReport(grid, report_path);
+    }
 
     std::vector<std::unique_ptr<Solver>> solvers;
 
-    // --- Standard Solvers ---
-    solvers.push_back(std::make_unique<BIDP>(grid));
-    solvers.push_back(std::make_unique<FIDP>(grid));
-    
-    // [ENABLED] Static A* (Very Fast)
+    // --- 1. Static ---
+    solvers.push_back(std::make_unique<FIDP>(grid));   
+    solvers.push_back(std::make_unique<BIDP>(grid));   
     solvers.push_back(std::make_unique<AStarSolver>(grid)); 
 
-    // --- Dynamic DP Solvers ---
+    // --- 2. Dynamic ---
     solvers.push_back(std::make_unique<DynamicBIDPSolver>(grid));
-    solvers.push_back(std::make_unique<DynamicFIDPSolver>(grid));
-    
-    // [REMAIN DISABLED] These are too slow for 100x100 on CPU
-    // solvers.push_back(std::make_unique<DynamicAVISolver>(grid)); 
-    // solvers.push_back(std::make_unique<DynamicAPISolver>(grid)); 
+    solvers.push_back(std::make_unique<DStarLiteSolver>(grid));   
 
-    // --- Dynamic Heuristic / Advanced Solvers ---
-    // [ENABLED] These are efficient and safe to run
-    solvers.push_back(std::make_unique<DynamicAStarSolver>(grid));
-    solvers.push_back(std::make_unique<DynamicHPASolver>(grid));
-    solvers.push_back(std::make_unique<ADASolver>(grid));
-    solvers.push_back(std::make_unique<DStarLiteSolver>(grid));
+    // --- 3. EnMod-DP Serial ---
+    solvers.push_back(std::make_unique<InterlacedSolver>(grid));       
+    solvers.push_back(std::make_unique<HybridDPRLSolver>(grid));       
+    solvers.push_back(std::make_unique<AdaptiveCostSolver>(grid));     
+    solvers.push_back(std::make_unique<HierarchicalSolver>(grid));     
+    solvers.push_back(std::make_unique<PolicyBlendingSolver>(grid));   
 
-    // --- RL Solvers (Enable if willing to wait for training) ---
-    // These will add significant startup time (minutes) for training
-    solvers.push_back(std::make_unique<QLearningSolver>(grid));
-    solvers.push_back(std::make_unique<DQNSolver>(grid));
-    solvers.push_back(std::make_unique<RLEnhancedAStarSolver>(grid));
-
-    // --- EnMod-DP Hybrid Solvers (CPU Versions) ---
-    // Keeping these enabled to compare against GPU
-    solvers.push_back(std::make_unique<HybridDPRLSolver>(grid));
-    solvers.push_back(std::make_unique<AdaptiveCostSolver>(grid));
-    solvers.push_back(std::make_unique<InterlacedSolver>(grid)); 
-    solvers.push_back(std::make_unique<HierarchicalSolver>(grid));
-    solvers.push_back(std::make_unique<PolicyBlendingSolver>(grid));
-    
-    // --- CUDA / GPU Solvers ---
+    // --- 4. Parallel ---
     if (isGpuAvailable()) {
-        std::cout << "[INFO] GPU detected. Enabling Parallel Solvers.\n";
-        // Static
-        solvers.push_back(std::make_unique<ParallelBIDP>(grid));
-        solvers.push_back(std::make_unique<ParallelFIDP>(grid));
-        solvers.push_back(std::make_unique<ParallelAVI>(grid));
-        
-        // Dynamic
+        solvers.push_back(std::make_unique<ParallelFIDP>(grid)); 
+        solvers.push_back(std::make_unique<ParallelBIDP>(grid)); 
+        solvers.push_back(std::make_unique<ParallelAVI>(grid)); 
         solvers.push_back(std::make_unique<ParallelDynamicBIDPSolver>(grid));
         solvers.push_back(std::make_unique<ParallelDynamicAVISolver>(grid));
-
-        // EnMod-DP Hybrid Solvers (GPU Versions)
+        solvers.push_back(std::make_unique<ParallelInterlacedSolver>(grid));
         solvers.push_back(std::make_unique<ParallelHybridDPRLSolver>(grid));
         solvers.push_back(std::make_unique<ParallelAdaptiveCostSolver>(grid));
-        solvers.push_back(std::make_unique<ParallelInterlacedSolver>(grid));
         solvers.push_back(std::make_unique<ParallelHierarchicalSolver>(grid));
         solvers.push_back(std::make_unique<ParallelPolicyBlendingSolver>(grid));
-    } else {
-        std::cout << "[WARN] No CUDA-capable GPU detected. Skipping Parallel Solvers.\n";
-        Logger::log(LogLevel::WARN, "Skipping GPU solvers: No device found.");
     }
 
     for (const auto& solver : solvers) {
-        std::cout << "  - Running " << solver->getName() << "... " << std::flush;
         if (isGpuAvailable()) cudaDeviceSynchronize();
-        
         auto start_time = std::chrono::high_resolution_clock::now();
-        solver->run();
-        if (isGpuAvailable()) cudaDeviceSynchronize();
         
+        solver->run();
+        
+        if (isGpuAvailable()) cudaDeviceSynchronize();
         auto end_time = std::chrono::high_resolution_clock::now();
+        
         std::chrono::duration<double, std::milli> execution_time = end_time - start_time;
-        std::cout << "Done (" << std::fixed << std::setprecision(2) << execution_time.count() << " ms).\n";
 
         Cost final_cost = solver->getEvacuationCost();
-        double weighted_cost = (final_cost.distance == MAX_COST) ? std::numeric_limits<double>::infinity() : (final_cost.smoke * 1000) + (final_cost.time * 10) + (final_cost.distance * 1);
+        double weighted_cost = (final_cost.distance == MAX_COST) 
+                               ? std::numeric_limits<double>::infinity() 
+                               : (final_cost.smoke * 1000) + (final_cost.time * 10) + (final_cost.distance * 1);
+        
         results.push_back({grid.getName(), solver->getName(), final_cost, weighted_cost, execution_time.count()});
-        HtmlReportGenerator::generateSolverReport(*solver, scenario_report_path);
+        
+        // --- CRITICAL SPACE SAVER ---
+        // Only generate the heavy HTML report if specifically requested
+        if (generate_detailed_html) {
+            HtmlReportGenerator::generateSolverReport(*solver, report_path);
+        }
     }
 }
 
 int main() {
     try {
-        std::filesystem::create_directory("logs");
         std::filesystem::create_directory("reports");
         Logger::init("logs/enmod_simulation.log");
+        
+        std::stringstream ss;
         auto now = std::chrono::system_clock::now();
         auto in_time_t = std::chrono::system_clock::to_time_t(now);
-        std::stringstream ss;
         ss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d_%H-%M-%S");
-        std::string report_root_path = "reports/run_" + ss.str();
-        std::filesystem::create_directory(report_root_path);
+        std::string master_root_path = "reports/Benchmark_1500Exp_" + ss.str();
+        std::filesystem::create_directory(master_root_path);
+
         std::cout << "Log file created at: logs/enmod_simulation.log\n";
-        std::cout << "Reports will be generated in: " << report_root_path << "\n";
+        std::cout << "Reports will be generated in: " << master_root_path << "\n";
 
-        std::vector<json> scenarios;
-        scenarios.push_back(ScenarioGenerator::generate(5, "5x5"));
-        scenarios.push_back(ScenarioGenerator::generate(15, "15x15"));
-        scenarios.push_back(ScenarioGenerator::generate(50, "50x50"));
-        scenarios.push_back(ScenarioGenerator::generate(100, "100x100"));
-        // scenarios.push_back(ScenarioGenerator::generate(200, "200x200")); // Commented for faster debugging iteration
+        // --- Config ---
+        std::vector<int> grid_sizes = {10, 25, 50,100};
+        std::vector<double> densities = {0.0, 0.15, 0.5};
+        int num_trials = 3;
 
-        std::vector<Result> all_results;
-        for (const auto& config : scenarios) {
-            runComparisonScenario(config, report_root_path, all_results);
+        // *** SPACE SAVING CONFIGURATION ***
+        // FALSE = Do not generate ~30,000 detailed HTML files (Saves GBs of space)
+        // TRUE  = Generate everything (Will likely crash on 128x128)
+        bool generate_detailed_html = false; 
+
+        std::cout << "Starting Large-Scale Benchmark (1500 Experiments)...\n";
+        std::cout << "Detailed HTML Reports: " << (generate_detailed_html ? "ENABLED" : "DISABLED (Summary Only)") << "\n";
+
+        std::vector<Result> global_results; 
+
+        // --- Loop 1: Grid Size ---
+        for (int size : grid_sizes) {
+            std::string size_folder = master_root_path + "/" + std::to_string(size) + "x" + std::to_string(size);
+            std::filesystem::create_directory(size_folder);
+            
+            std::vector<Result> size_results; // Aggregates results for this grid size
+
+            // --- Loop 2: Density ---
+            for (double density : densities) {
+                // --- Loop 3: Random Trials ---
+                for (int trial = 1; trial <= num_trials; ++trial) {
+                    std::cout << "Running " << size << "x" << size << " | D: " << density << " | Trial " << trial << "... " << std::flush;
+                    
+                    // Create Per-Trial Folder (Organization)
+                    std::string trial_folder_name = "D" + std::to_string((int)(density*100)) + "_T" + std::to_string(trial);
+                    std::string full_trial_path = size_folder + "/" + trial_folder_name;
+                    std::filesystem::create_directory(full_trial_path);
+
+                    std::string name = std::to_string(size) + "x" + std::to_string(size) + "_" + trial_folder_name;
+                    
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    json config = ScenarioGenerator::generate(size, name, density);
+
+                    std::vector<Result> trial_results;
+                    
+                    // Run Simulation (Detailed HTML is OFF)
+                    runComparisonScenario(config, full_trial_path, trial_results, generate_detailed_html);
+
+                    // 1. Generate Per-Trial Summary (Small file, ~2KB)
+                    HtmlReportGenerator::generateSummaryReport(trial_results, full_trial_path, "_Summary_Report.html");
+
+                    // 2. Accumulate Results
+                    size_results.insert(size_results.end(), trial_results.begin(), trial_results.end());
+                    global_results.insert(global_results.end(), trial_results.begin(), trial_results.end());
+
+                    std::cout << "Done.\n";
+                }
+            }
+
+            // 3. Generate Average Summary for this Grid Size
+            std::cout << "Generating Average Report for " << size << "x" << size << "...\n";
+            HtmlReportGenerator::generateSummaryReport(size_results, size_folder, "_Average_Summary_Report.html");
         }
 
-        HtmlReportGenerator::generateSummaryReport(all_results, report_root_path);
-        std::cout << "\nComparison simulation complete. Summary written to " << report_root_path << "/_Summary_Report.html\n";
+        // 4. Generate Master Global Report (All 1500 experiments aggregated)
+        std::cout << "Generating Master Global Report...\n";
+        HtmlReportGenerator::generateSummaryReport(global_results, master_root_path, "_Global_Summary_Report.html");
 
-        std::cout << "\n--- Starting Multi-Agent Simulation with HybridDPRLSolver ---\n";
-        for(const auto& config : scenarios) {
-            MultiAgentCPSController cps_controller(config, report_root_path + "/" + config["name"].get<std::string>(), 5);
-            cps_controller.run_simulation();
-        }
-
-        Logger::log(LogLevel::INFO, "Application Finished Successfully");
+        std::cout << "\nBenchmark complete.\n";
         Logger::close();
     } catch (const std::exception& e) {
-        std::cerr << "A critical error occurred: " << e.what() << std::endl;
-        Logger::log(LogLevel::ERROR, "A critical error occurred: " + std::string(e.what()));
+        std::cerr << "Critical Error: " << e.what() << std::endl;
+        Logger::log(LogLevel::ERROR, "Critical Error: " + std::string(e.what()));
         return 1;
     }
     return 0;

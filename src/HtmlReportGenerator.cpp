@@ -3,6 +3,8 @@
 #include <map>
 #include <algorithm>
 #include <vector>
+#include <iomanip>
+#include <iostream>
 
 void writeHtmlHeader(std::ofstream& file, const std::string& title) {
     file << "<!DOCTYPE html>\n<html lang='en'>\n<head>\n";
@@ -53,106 +55,114 @@ void HtmlReportGenerator::generateSolverReport(const Solver& solver, const std::
     writeHtmlFooter(report_file);
 }
 
-void HtmlReportGenerator::generateSummaryReport(const std::vector<Result>& results, const std::string& path) {
-    std::string file_path = path + "/_Summary_Report.html";
+// Updated to use the filename parameter
+void HtmlReportGenerator::generateSummaryReport(const std::vector<Result>& results, const std::string& path, const std::string& filename) {
+    std::string file_path = path + "/" + filename;
     std::ofstream report_file(file_path);
     if (!report_file) return;
 
     writeHtmlHeader(report_file, "Simulation Summary Report");
-    report_file << "<h1>Final Simulation Summary</h1>\n";
+    report_file << "<h1>Simulation Summary (" << filename << ")</h1>\n";
 
-    std::vector<std::string> scenarios;
-    std::map<std::string, bool> seen_scenarios;
+    struct Stats {
+        int count = 0;
+        int failures = 0;
+        long long smoke = 0;
+        long long time = 0;
+        long long dist = 0;
+        double w_cost = 0;
+        double exec_time = 0;
+    };
+
+    std::map<std::string, std::map<std::string, Stats>> aggregated_data;
+    std::vector<std::string> base_scenarios;
+
     for (const auto& res : results) {
-        if (!seen_scenarios[res.scenario_name]) {
-            scenarios.push_back(res.scenario_name);
-            seen_scenarios[res.scenario_name] = true;
+        // Intelligent aggregation:
+        // If results contain multiple trials (e.g. "_T1", "_T2"), this logic groups them by base name.
+        // If results are from a single trial, "base_name" is just the scenario name, and average = actual value.
+        std::string base_name = res.scenario_name;
+        size_t last_underscore = base_name.find_last_of('_');
+        // Check if suffix is like "_T1", "_T2"
+        if (last_underscore != std::string::npos && base_name.substr(last_underscore).rfind("_T", 0) == 0) {
+            base_name = base_name.substr(0, last_underscore);
+        }
+
+        if (aggregated_data.find(base_name) == aggregated_data.end()) {
+            base_scenarios.push_back(base_name);
+        }
+
+        Stats& s = aggregated_data[base_name][res.solver_name];
+        s.count++;
+        
+        if (res.cost.distance >= MAX_COST || res.cost.distance < 0) {
+            s.failures++;
+        } else {
+            s.smoke += res.cost.smoke;
+            s.time += res.cost.time;
+            s.dist += res.cost.distance;
+            s.w_cost += res.weighted_cost;
+            s.exec_time += res.execution_time;
         }
     }
-     std::sort(scenarios.begin(), scenarios.end(), [](const std::string& a, const std::string& b){
-        return std::stoi(a.substr(0, a.find('x'))) < std::stoi(b.substr(0, b.find('x')));
+
+    std::sort(base_scenarios.begin(), base_scenarios.end(), [](const std::string& a, const std::string& b){
+        try {
+            int size_a = std::stoi(a.substr(0, a.find('x')));
+            int size_b = std::stoi(b.substr(0, b.find('x')));
+            if (size_a != size_b) return size_a < size_b;
+        } catch(...) {}
+        return a < b;
     });
 
-    std::vector<std::string> static_dp_solvers = {"BIDP", "FIDP", "API"};
-    std::vector<std::string> static_heuristic_solvers = {"AStar"};
-    std::vector<std::string> static_rl_solvers = {"QLearning", "SARSA", "ActorCritic"};
-    std::vector<std::string> dynamic_dp_solvers = {"DynamicBIDPSim", "DynamicFIDPSim", "DynamicAVISim", "DynamicAPISim"};
-    std::vector<std::string> dynamic_heuristic_solvers = {"DynamicAStarSim"}; 
-    std::vector<std::string> dynamic_rl_solvers = {"DynamicQLearningSim", "DynamicSARSASim", "DynamicActorCriticSim"};
-    std::vector<std::string> advanced_heuristic_solvers = {"DynamicHPAStar", "ADASolver", "DStarLiteSim"};
-    std::vector<std::string> deep_rl_solvers = {"DQN"};
-    std::vector<std::string> hybrid_solvers = {"HybridDPRLSim", "AdaptiveCostSim", "InterlacedSim", "HierarchicalSim", "PolicyBlendingSim", "RLEnhancedAStar"};
-    std::vector<std::string> cuda_solvers = {"ParallelBIDP", "ParallelFIDP", "ParallelAVI","ParallelDynamicBIDPSim", "ParallelDynamicFIDPSim", "ParallelDynamicAVISim","ParallelHybridDPRLSim", "ParallelAdaptiveCostSim", "ParallelInterlacedSim", "ParallelHierarchicalSim", "ParallelPolicyBlendingSim" };
-
+    // --- Dynamic Solver List Construction ---
+    // Instead of hardcoding, collect all unique solver names found in results
+    std::vector<std::string> all_solvers;
+    for (const auto& pair : aggregated_data.begin()->second) {
+        all_solvers.push_back(pair.first);
+    }
+    // Sort broadly to keep Serial/Parallel grouped if named consistently
+    std::sort(all_solvers.begin(), all_solvers.end());
 
     report_file << "<table>\n";
-    
     report_file << "<thead><tr><th rowspan='2'>Algorithm</th>";
-    for(const auto& scn : scenarios){
+    for(const auto& scn : base_scenarios){
         report_file << "<th colspan='5'>" << scn << "</th>";
     }
     report_file << "</tr>\n";
 
     report_file << "<tr>";
-    for(size_t i = 0; i < scenarios.size(); ++i){
-        report_file << "<th>Smoke</th><th>Time</th><th>Dist</th><th>W. Cost</th><th>Exec. Time (ms)</th>";
+    for(size_t i = 0; i < base_scenarios.size(); ++i){
+        report_file << "<th>Smoke</th><th>Time</th><th>Dist</th><th>W. Cost</th><th>Exec(ms)</th>";
     }
     report_file << "</tr></thead>\n<tbody>";
 
-    auto write_solver_rows = [&](const std::vector<std::string>& solver_names){
-        for(const auto& solver_name : solver_names){
-            report_file << "<tr><td>" << solver_name << "</td>";
-            for(const auto& scn : scenarios){
-                auto it = std::find_if(results.begin(), results.end(), [&](const Result& r){
-                    return r.scenario_name == scn && r.solver_name == solver_name;
-                });
-                if(it != results.end()){
-                    if (it->cost.distance == MAX_COST) {
-                        report_file << "<td colspan='5'>FAILURE / N/A</td>";
-                    } else {
-                        report_file << "<td>" << it->cost.smoke << "</td>";
-                        report_file << "<td>" << it->cost.time << "</td>";
-                        report_file << "<td>" << it->cost.distance << "</td>";
-                        report_file << "<td>" << static_cast<int>(it->weighted_cost) << "</td>";
-                        report_file << "<td>" << it->execution_time << "</td>";
-                    }
-                } else {
-                     report_file << "<td colspan='5'>Not Run</td>";
-                }
+    for(const auto& solver : all_solvers){
+        report_file << "<tr><td>" << solver << "</td>";
+        for(const auto& scn : base_scenarios){
+            if (aggregated_data.find(scn) == aggregated_data.end() || 
+                aggregated_data[scn].find(solver) == aggregated_data[scn].end()) {
+                report_file << "<td colspan='5' style='color:gray'>Not Run</td>";
+                continue;
             }
-            report_file << "</tr>\n";
+
+            const auto& stats = aggregated_data[scn][solver];
+            int successful_runs = stats.count - stats.failures;
+
+            if (successful_runs > 0) {
+                report_file << "<td>" << (stats.smoke / successful_runs) << "</td>";
+                report_file << "<td>" << (stats.time / successful_runs) << "</td>";
+                report_file << "<td>" << (stats.dist / successful_runs) << "</td>";
+                report_file << "<td>" << static_cast<long long>(stats.w_cost / successful_runs) << "</td>";
+                report_file << "<td>" << std::fixed << std::setprecision(2) << (stats.exec_time / successful_runs) << "</td>";
+            } else if (stats.count > 0) {
+                report_file << "<td colspan='5' style='color:red'>ALL FAILED</td>";
+            } else {
+                report_file << "<td colspan='5' style='color:gray'>Not Run</td>";
+            }
         }
-    };
-
-    report_file << "<tr><td colspan='" << (1 + scenarios.size() * 5) << "' class='row-header'>Static Planners (Model-Based DP)</td></tr>";
-    write_solver_rows(static_dp_solvers);
-
-    report_file << "<tr><td colspan='" << (1 + scenarios.size() * 5) << "' class='row-header'>Static Planners (Heuristic)</td></tr>";
-    write_solver_rows(static_heuristic_solvers);
-    
-    report_file << "<tr><td colspan='" << (1 + scenarios.size() * 5) << "' class='row-header'>Static Planners (Model-Free RL Training)</td></tr>";
-    write_solver_rows(static_rl_solvers);
-
-    report_file << "<tr><td colspan='" << (1 + scenarios.size() * 5) << "' class='row-header'>Dynamic Simulators (DP-Based)</td></tr>";
-    write_solver_rows(dynamic_dp_solvers);
-
-    report_file << "<tr><td colspan='" << (1 + scenarios.size() * 5) << "' class='row-header'>Dynamic Simulators (Heuristic)</td></tr>";
-    write_solver_rows(dynamic_heuristic_solvers);
-
-    report_file << "<tr><td colspan='" << (1 + scenarios.size() * 5) << "' class='row-header'>Dynamic Simulators (Advanced Heuristic)</td></tr>";
-    write_solver_rows(advanced_heuristic_solvers);
-
-    report_file << "<tr><td colspan='" << (1 + scenarios.size() * 5) << "' class='row-header'>Dynamic Simulators (RL-Based)</td></tr>";
-    write_solver_rows(dynamic_rl_solvers);
-
-    report_file << "<tr><td colspan='" << (1 + scenarios.size() * 5) << "' class='row-header'>Dynamic Simulators (Deep RL)</td></tr>";
-    write_solver_rows(deep_rl_solvers);
-
-    report_file << "<tr><td colspan='" << (1 + scenarios.size() * 5) << "' class='row-header'>EnMod-DP Hybrid Solvers</td></tr>";
-    write_solver_rows(hybrid_solvers);
-
-    report_file << "<tr><td colspan='" << (1 + scenarios.size() * 5) << "' class='row-header'>CUDA / GPU Accelerated Solvers</td></tr>";
-    write_solver_rows(cuda_solvers);
+        report_file << "</tr>\n";
+    }
 
     report_file << "</tbody></table>\n";
     writeHtmlFooter(report_file);
