@@ -30,125 +30,49 @@ __device__ __forceinline__ DeviceCost d_cost_add(const DeviceCost& a, const Devi
     return {a.smoke + b.smoke, a.time + b.time, a.distance + b.distance};
 }
 
-// --- CUDA KERNEL (OPTIMIZED WITH SHARED MEMORY) ---
-
-// Configuration for Tiling
-#define TILE_DIM 16
-#define HALO 1
-#define SHARED_DIM (TILE_DIM + 2 * HALO)
+// --- CUDA KERNEL ---
 
 __global__ void relaxation_kernel(const DeviceGridCell* d_grid, const DeviceCost* d_in, DeviceCost* d_out, int* d_changed, int rows, int cols, DeviceEvacuationMode mode) {
-    // 1. Allocate Shared Memory (The "Local Cache")
-    // Stores the 16x16 tile plus a 1-cell border (halo) of neighbors
-    __shared__ DeviceCost s_costs[SHARED_DIM][SHARED_DIM];
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    int r = blockIdx.y * blockDim.y + threadIdx.y;
+    if (r >= rows || c >= cols) return;
 
-    // 2. Calculate Coordinates
-    int tx = threadIdx.x;
-    int ty = threadIdx.y;
-    int col = blockIdx.x * blockDim.x + tx;
-    int row = blockIdx.y * blockDim.y + ty;
+    int idx = r * cols + c;
+    DeviceGridCell cell = d_grid[idx];
+    DeviceCost current_val = d_in[idx];
 
-    // Coordinates within Shared Memory (shifted by Halo)
-    int s_row = ty + HALO;
-    int s_col = tx + HALO;
-
-    int global_idx = row * cols + col;
-
-    // 3. Collaborative Loading: Global -> Shared
-    // Load Central Tile
-    if (row < rows && col < cols) {
-        s_costs[s_row][s_col] = d_in[global_idx];
-    } else {
-        s_costs[s_row][s_col] = D_MAX_COST;
-    }
-
-    // Load Halos (Ghost Cells) - optimized to avoid diverging branches where possible
-    // Top Halo
-    if (ty < HALO) {
-        int r_in = row - HALO;
-        if (r_in >= 0 && r_in < rows && col < cols)
-            s_costs[s_row - HALO][s_col] = d_in[r_in * cols + col];
-        else
-            s_costs[s_row - HALO][s_col] = D_MAX_COST;
-    }
-    // Bottom Halo
-    if (ty >= blockDim.y - HALO) {
-        int r_in = row + HALO;
-        if (r_in >= 0 && r_in < rows && col < cols)
-            s_costs[s_row + HALO][s_col] = d_in[r_in * cols + col];
-        else
-            s_costs[s_row + HALO][s_col] = D_MAX_COST;
-    }
-    // Left Halo
-    if (tx < HALO) {
-        int c_in = col - HALO;
-        if (row < rows && c_in >= 0 && c_in < cols)
-            s_costs[s_row][s_col - HALO] = d_in[row * cols + c_in];
-        else
-            s_costs[s_row][s_col - HALO] = D_MAX_COST;
-    }
-    // Right Halo
-    if (tx >= blockDim.x - HALO) {
-        int c_in = col + HALO;
-        if (row < rows && c_in >= 0 && c_in < cols)
-            s_costs[s_row][s_col + HALO] = d_in[row * cols + c_in];
-        else
-            s_costs[s_row][s_col + HALO] = D_MAX_COST;
-    }
-
-    // Wait for all threads to finish loading the tile
-    __syncthreads();
-
-    // 4. Compute Phase (Using Fast Shared Memory)
-    if (row >= rows || col >= cols) return;
-
-    DeviceGridCell cell = d_grid[global_idx]; // Static map is L2 cached automatically
     if (!cell.is_walkable) {
-        d_out[global_idx] = s_costs[s_row][s_col]; 
+        d_out[idx] = current_val; 
         return;
     }
-
-    DeviceCost current_val = s_costs[s_row][s_col];
     
-    // Source node check (cost 0 stays 0)
+    // If it's a source node (cost 0), it stays 0.
     if (current_val.distance == 0 && current_val.time == 0 && current_val.smoke == 0) {
-        d_out[global_idx] = current_val;
+        d_out[idx] = current_val;
         return;
     }
 
     DeviceCost best_neighbor = current_val;
     DeviceCost move_cost = cell.move_cost;
 
-    // Check 4 Neighbors reading from SHARED MEMORY (Low Latency)
-    // Up
-    DeviceCost n = s_costs[s_row - 1][s_col];
-    if (n.distance != DEVICE_MAX_INT) {
-        DeviceCost path = d_cost_add(n, move_cost);
-        if (d_cost_less(path, best_neighbor, mode)) best_neighbor = path;
-    }
-    // Down
-    n = s_costs[s_row + 1][s_col];
-    if (n.distance != DEVICE_MAX_INT) {
-        DeviceCost path = d_cost_add(n, move_cost);
-        if (d_cost_less(path, best_neighbor, mode)) best_neighbor = path;
-    }
-    // Left
-    n = s_costs[s_row][s_col - 1];
-    if (n.distance != DEVICE_MAX_INT) {
-        DeviceCost path = d_cost_add(n, move_cost);
-        if (d_cost_less(path, best_neighbor, mode)) best_neighbor = path;
-    }
-    // Right
-    n = s_costs[s_row][s_col + 1];
-    if (n.distance != DEVICE_MAX_INT) {
-        DeviceCost path = d_cost_add(n, move_cost);
-        if (d_cost_less(path, best_neighbor, mode)) best_neighbor = path;
+    int dr[] = {-1, 1, 0, 0};
+    int dc[] = {0, 0, -1, 1};
+
+    for(int i=0; i<4; ++i) {
+        int nr = r + dr[i];
+        int nc = c + dc[i];
+        if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
+            DeviceCost n_cost = d_in[nr * cols + nc];
+            if (n_cost.distance != DEVICE_MAX_INT) {
+                DeviceCost path_cost = d_cost_add(n_cost, move_cost);
+                if (d_cost_less(path_cost, best_neighbor, mode)) {
+                    best_neighbor = path_cost;
+                }
+            }
+        }
     }
 
-    // Write result back to Global Memory
-    d_out[global_idx] = best_neighbor;
-    
-    // Check for convergence
+    d_out[idx] = best_neighbor;
     if (d_cost_less(best_neighbor, current_val, mode)) {
         atomicOr(d_changed, 1);
     }
@@ -231,7 +155,6 @@ void ParallelSolverBase::run_cuda_algo(const std::vector<Position>& source_nodes
 
     DeviceEvacuationMode mode = static_cast<DeviceEvacuationMode>(Cost::current_mode);
 
-    // Matches TILE_DIM defined in kernel
     dim3 block(16, 16);
     dim3 grid_dim((cols + block.x - 1) / block.x, (rows + block.y - 1) / block.y);
 
@@ -239,7 +162,6 @@ void ParallelSolverBase::run_cuda_algo(const std::vector<Position>& source_nodes
         changed_h = 0;
         checkCuda(cudaMemcpy(d_changed_flag, &changed_h, sizeof(int), cudaMemcpyHostToDevice), "Reset Flag");
 
-        // Configured launch with 16x16 blocks
         relaxation_kernel<<<grid_dim, block>>>(d_grid, d_cost_in, d_cost_out, d_changed_flag, rows, cols, mode);
         checkCuda(cudaDeviceSynchronize(), "Kernel Sync");
 
